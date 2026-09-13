@@ -24,8 +24,10 @@ RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tzdata \
  && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt \
+# requirements-dev.txt = 运行时依赖 + httpx（供容器内自检用的 TestClient）
+# 想让生产镜像更瘦，把这行换成 -r requirements.txt（代价是容器里跑不了 tests/）
+COPY requirements.txt requirements-dev.txt ./
+RUN pip install --no-cache-dir -r requirements-dev.txt \
  && if [ -n "$EXTRAS" ]; then pip install --no-cache-dir $EXTRAS; fi
 
 # 只拷贝运行所需内容；镜像里没有 .env（配置一律用环境变量注入）

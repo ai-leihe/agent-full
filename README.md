@@ -227,6 +227,7 @@ ContractError: [a1] 插件 'hash_embedder' 需要产物 ['chunks']，但上游�
 
 ```bash
 pip install -r requirements.txt
+pip install -r requirements-dev.txt        # 跑测试才需要：补上 TestClient 依赖的 httpx2
 copy .env.example .env                     # Linux/macOS：cp .env.example .env（填 Milvus 地址等）
 cd deploy/milvus && docker compose up -d   # 启动 Milvus（默认入库后端，首次会拉镜像）
 cd ../.. && python run.py                  # 打开 http://127.0.0.1:8000
@@ -633,7 +634,8 @@ pipeline:
 ```
 agent-full/
 ├── run.py                        # 启动脚本（uvicorn 127.0.0.1:8000）
-├── requirements.txt
+├── requirements.txt              # 运行时依赖
+├── requirements-dev.txt          # ★ 开发 / 自检依赖（httpx2，Starlette TestClient 需要）
 ├── .env.example                  # ★ 公共环境变量模板（复制为 .env；含 Milvus 连接配置）
 ├── config/
 │   ├── pipeline.yaml             # ★ 静态编排（启动时的默认流水线）
@@ -798,6 +800,9 @@ docker build -t agent-platform:v1.0.0 -f deploy/Dockerfile .
 - 自带 `HEALTHCHECK`，打的是免登录的 `GET /api/health`，与 K8s 探针同一入口。
 - `.dockerignore` 在项目根，把 `data/`、`.env`、`config/settings.json` 等**本地运行时状态**
   挡在镜像之外，避免把本机的库和密钥打进交付物。
+- 镜像默认连 `requirements-dev.txt` 一起装（多出 `httpx2` / `httpx` 两个测试客户端），这样
+  11.2 的「容器内自检」可以直接跑；想要更瘦的生产镜像，把 Dockerfile 那行换成
+  `-r requirements.txt` 即可。
 
 ### 11.2 Docker Compose 单机部署
 

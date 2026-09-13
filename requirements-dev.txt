@@ -1,0 +1,10 @@
+# 开发 / 自检用的额外依赖（生产环境可以不装）
+#
+# Starlette 的 TestClient（tests/test_platform.py、tests/test_script.py 用它发请求）依赖
+# 一个独立的 HTTP 客户端：Starlette >= 1.0 要求 httpx2，< 1.0 要求 httpx。两个都列上，
+# 避免「只装 requirements.txt 就跑测试」时 setUpClass 报 RuntimeError / ModuleNotFoundError。
+#
+# 容器镜像默认会装它，便于在容器里自检（见 deploy/Dockerfile）。
+-r requirements.txt
+httpx>=0.27.0
+httpx2>=2.0.0
