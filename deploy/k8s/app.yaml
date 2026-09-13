@@ -1,0 +1,215 @@
+# 平台在 Kubernetes 上的最小可用清单（Namespace + 配置 + 存储 + 工作负载 + 入口）
+#
+#   kubectl apply -f deploy/k8s/app.yaml
+#   kubectl -n agent-platform rollout status deploy/agent-platform
+#
+# 部署前请确认三处需替换：
+#   1) Deployment 里的 image（换成你自己的镜像仓库地址）
+#   2) ConfigMap 里的 MILVUS_URI（集群内 Milvus 服务名，或集群外地址）
+#   3) Ingress 里的 host（换成你的域名）
+#
+# 设计约束（与代码里的状态管理方式有关，详见 README「部署方案」章节）：
+#   * 默认单副本 + Recreate：数据卷是 RWO，且「编排草稿」「运行上下文」是进程内存态；
+#     要横向扩副本，前提是把 PLATFORM_DATABASE_URL 换成外部数据库，并接受草稿不共享
+#     （或用 Ingress 会话亲和把同一用户固定到一个副本）。
+#   * 平台状态全部落在 /app/data（SQLite 库 + 上传原件 + 脚本工作区），必须挂持久卷。
+#   * 容器以非 root（UID 10001）运行，fsGroup 保证持久卷可写。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agent-platform
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-platform-config
+  namespace: agent-platform
+data:
+  # ---- 向量库（非敏感部分）----
+  # 集群内 Milvus：<service>.<namespace>.svc.cluster.local
+  #   用官方 Helm chart 安装（release 名 milvus）= milvus.agent-platform.svc.cluster.local:19530
+  # 集群外 Milvus：填可路由的地址，例如 milvus.example.com:19530
+  MILVUS_URI: "http://milvus.agent-platform.svc.cluster.local:19530"
+  # 多次上传共用一个集合，靠 run_id 隔离；换集合等于换一个独立的向量库
+  MILVUS_COLLECTION: "default"
+  # COSINE / IP；集合的维度与度量首次创建即固定，改动前先换集合名
+  MILVUS_METRIC_TYPE: "COSINE"
+  # ---- 运行行为 ----
+  TZ: "Asia/Shanghai"
+  PYTHONUNBUFFERED: "1"
+  # 只读根文件系统下必须关掉字节码写入
+  PYTHONDONTWRITEBYTECODE: "1"
+---
+# 可选：把额外的 Skill 插件（*.py）放进 ConfigMap，挂载后即被「重新扫描插件目录」发现
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-platform-ext-plugins
+  namespace: agent-platform
+data: {}
+  # example_sensitive_word_cleaner.py: |
+  #   from app.core.skill import Skill, register
+  #   ...
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: agent-platform-secret
+  namespace: agent-platform
+type: Opaque
+stringData:
+  # 平台数据库。留空 = 容器内 SQLite（/app/data/platform.db）。
+  # 生产建议外部库（多副本、备份、SLA 的前提）：
+  #   mysql://app:app123456@mysql.agent-platform.svc.cluster.local:3306/agent_platform?charset=utf8mb4
+  #   postgresql://app:app123456@postgres:5432/agent_platform
+  PLATFORM_DATABASE_URL: ""
+  # Milvus 鉴权，形如 user:password；本地 / 内网无鉴权留空
+  MILVUS_TOKEN: ""
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: agent-platform-data
+  namespace: agent-platform
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+  # 按集群实际 StorageClass 填写；留空则用默认 StorageClass
+  # storageClassName: standard
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-platform
+  namespace: agent-platform
+  labels:
+    app: agent-platform
+spec:
+  replicas: 1
+  strategy:
+    # RWO 卷 + 进程内状态：先停后起，不做双活滚动
+    type: Recreate
+  selector:
+    matchLabels:
+      app: agent-platform
+  template:
+    metadata:
+      labels:
+        app: agent-platform
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        # 持久卷由 kubelet 按这个组调权，否则非 root 进程写不进去
+        fsGroup: 10001
+      containers:
+        - name: app
+          # ★ 换成你自己的镜像（docker build -t <repo>/agent-platform:v1.0.0 -f deploy/Dockerfile .）
+          image: agent-platform:v1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: agent-platform-config
+            - secretRef:
+                name: agent-platform-secret
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: ext-plugins
+              mountPath: /app/ext_plugins
+              readOnly: true
+            # 只读根文件系统下留给临时文件
+            - name: tmp
+              mountPath: /tmp
+          # 启动：首次装配要扫插件 + 校验契约，给足 150s
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            # 平台上传统一走内存（解压 / 分片 / 向量化），按语料规模上调 limits
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: agent-platform-data
+        - name: ext-plugins
+          configMap:
+            name: agent-platform-ext-plugins
+            # 目录为空也能正常启动
+            optional: true
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-platform
+  namespace: agent-platform
+spec:
+  selector:
+    app: agent-platform
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: agent-platform
+  namespace: agent-platform
+  annotations:
+    # ★ 必须与平台设置 upload.max_mb（默认 20）对齐，否则上传在大文件上先被 Ingress 挡回 413
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    # 上传 + 流水线是同步执行，长文件给足超时
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: agent-platform.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: agent-platform
+                port:
+                  name: http
+  # 启用 HTTPS 时打开（证书可由 cert-manager 签发，secretName 换成实际名称）
+  # tls:
+  #   - hosts: ["agent-platform.example.com"]
+  #     secretName: agent-platform-tls

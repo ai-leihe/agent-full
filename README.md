@@ -764,24 +764,243 @@ agent-full/
 | 审计日志 | ✅ 已有 `audit_log` 表与 `audit / list_audit / audit_stats`；可继续扩展为更细粒度的操作审计 |
 
 
-## 11. Agent示例界面
+## 11. 部署方案（Docker / Kubernetes）
+
+三种形态按场景选，配置注入规则三处一致：**系统环境变量 > `.env` > 代码默认值**（见 5.1）。
+
+| 形态 | 适用场景 | 前置条件 | 入口 |
+|---|---|---|---|
+| 本机直跑 | 开发 / 调试 | Python 3.10+、Milvus | `python run.py`（第 4 节） |
+| Docker Compose | 单机交付 / 试点 / 演示 | Docker + Compose v2 | `deploy/docker-compose.yml` |
+| Kubernetes | 企业内网 / 多环境 / 离线 | 集群 + 镜像仓库 | `deploy/k8s/app.yaml` |
+
+> 容器与集群里**不需要挂 `.env`**：把值用 `environment` / ConfigMap / Secret 注入即可，
+> 平台启动时的 `load_dotenv()` 不会覆盖已存在的系统变量，所以环境变量天然优先。
+
+### 11.1 应用镜像（`deploy/Dockerfile`）
+
+```bash
+# 必须在项目根执行（构建上下文就是项目根）
+docker build -t agent-platform:v1.0.0 -f deploy/Dockerfile .
+```
+
+- 基础镜像 `python:3.12-slim`，**没有前端构建步骤**（`web/` 是原生页面，直接 COPY 进镜像）。
+- 可选依赖由 `--build-arg EXTRAS="..."` 控制，默认装默认入库后端与文档解析要用的
+  `pymilvus` / `pypdf` / `python-docx`；要接 OpenAI 向量化或把平台库换成 PostgreSQL 时再追加
+  `openai` / `psycopg2-binary`（`pymysql` 已在 `requirements.txt` 主依赖里）。
+- 以非 root（UID `10001`）运行，`/app/data` 是唯一需要持久化的目录；容器内用
+  `uvicorn --host 0.0.0.0` 启动（`run.py` 里的 `127.0.0.1` 只适合本机直跑）。
+- 自带 `HEALTHCHECK`，打的是免登录的 `GET /api/health`，与 K8s 探针同一入口。
+- `.dockerignore` 在项目根，把 `data/`、`.env`、`config/settings.json` 等**本地运行时状态**
+  挡在镜像之外，避免把本机的库和密钥打进交付物。
+
+### 11.2 Docker Compose 单机部署
+
+```bash
+# 1) 先起向量库（首次会拉镜像，健康检查有 90s 宽限期）
+cd deploy/milvus && docker compose up -d
+
+# 2) 回项目根，构建并启动应用
+cd ../.. && docker compose -f deploy/docker-compose.yml up -d --build
+
+# 3) 验证（返回 {"status":"ok",...} 即成功）
+curl http://127.0.0.1:8000/api/health
+```
+
+打开 <http://127.0.0.1:8000> 即是工作台；首次运行会播种管理员 `admin` / `admin123`，**登录后请立刻改密**。
+
+- **地址视角**：容器里的 `localhost` 是容器自己，不能用宿主机视角的 `localhost` 指宿主服务。
+  所以 compose 用 `APP_MILVUS_URI` 作为「容器视角地址」的覆盖点，默认
+  `http://host.docker.internal:19530`（Linux 通过 `extra_hosts: host-gateway` 补出该域名）。
+  想沿用项目根 `.env`：`docker compose -f deploy/docker-compose.yml --env-file .env up -d`
+  —— 根 `.env` 里 `MILVUS_URI=http://localhost:19530` 是宿主机视角，不会被注入容器。
+- **持久化**：平台状态全在具名卷 `agent-platform-data`（容器内 `/app/data`：`platform.db` +
+  `uploads/` + `script_workspace/`）。`docker compose down` 不删卷，`down -v` 才删。
+- **外部插件**：宿主机 `ext_plugins/` 以只读方式挂进容器，丢 `.py` 进去后在「技能库」点
+  「重新扫描插件目录」即生效，无需重建镜像。
+- **容器内自检**（与 CI 同一套用例，Milvus 不通时相关用例自动跳过）：
+  ```bash
+  docker compose -f deploy/docker-compose.yml run --rm app python -m unittest discover -s tests
+  ```
+- 常用运维：`docker compose -f deploy/docker-compose.yml logs -f app`、`... ps`、
+  `... exec app python -c "import app.main"`（验证配置能否装配）、`... restart app`。
+
+### 11.3 Kubernetes 部署
+
+```bash
+kubectl apply -f deploy/k8s/app.yaml
+kubectl -n agent-platform rollout status deploy/agent-platform
+kubectl -n agent-platform port-forward svc/agent-platform 8080:80   # 本地验证入口
+```
+
+清单共 8 个对象（一个文件，`kubectl apply` 顺序无关）：
+
+| 对象 | 作用 | 部署前要改什么 |
+|---|---|---|
+| `Namespace/agent-platform` | 独立命名空间 | — |
+| `ConfigMap/agent-platform-config` | `MILVUS_URI` / 集合 / 度量 / `TZ` / Python 行为 | ★ `MILVUS_URI` 指向集群内 Milvus 服务名或集群外地址 |
+| `ConfigMap/agent-platform-ext-plugins` | 需要追加的 Skill 插件（`.py`） | 空目录也能启动，按需填 |
+| `Secret/agent-platform-secret` | `PLATFORM_DATABASE_URL` / `MILVUS_TOKEN` | ★ 生产建议填外部数据库连接串 |
+| `PVC/agent-platform-data` | 承载 `/app/data`（平台库 + 上传原件） | `storageClassName` 与容量 |
+| `Deployment/agent-platform` | 单副本、`Recreate`、非 root、只读根文件系统 | ★ `image` 换成自己的镜像仓库地址 |
+| `Service/agent-platform` | 集群内 80 → 容器 8000 | — |
+| `Ingress/agent-platform` | 对外域名与 TLS | ★ `host`；`proxy-body-size` 要与上传上限对齐 |
+
+关键片段（完整内容见文件）：
+
+```yaml
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate            # RWO 卷 + 进程内状态：先停后起，不做双活滚动
+  template:
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001        # 让持久卷可被非 root 进程写入
+      containers:
+        - name: app
+          envFrom:
+            - configMapRef: {name: agent-platform-config}
+            - secretRef: {name: agent-platform-secret}
+          volumeMounts:
+            - {name: data, mountPath: /app/data}
+            - {name: ext-plugins, mountPath: /app/ext_plugins, readOnly: true}
+            - {name: tmp, mountPath: /tmp}      # 只读根文件系统下留给临时文件
+          startupProbe:        # 首次装配要扫插件 + 校验契约，给足 150s
+            httpGet: {path: /api/health, port: http}
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: {path: /api/health, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /api/health, port: http}
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+```
+
+**集群内的 Milvus**：用官方 Helm chart 起一个 Standalone，再把
+`ConfigMap` 里的 `MILVUS_URI` 指向 `milvus.agent-platform.svc.cluster.local:19530`：
+
+```bash
+helm repo add milvus https://zilliztech.github.io/milvus-helm/ && helm repo update
+helm install milvus milvus/milvus -n agent-platform \
+  --set cluster.enabled=false --set etcd.replicaCount=1 \
+  --set minio.mode=standalone --set pulsar.enabled=false
+```
+
+> chart 版本与 Milvus 版本需匹配（本仓库 `deploy/milvus` 用的是 `v3.0.0`），以官方安装文档为准；
+> 也可以直接用集群外的 Milvus，把 `MILVUS_URI` 填成可路由地址即可。
+
+**副本数的硬约束**（别急着 `kubectl scale`）：平台状态虽已落库，但「编排草稿」「运行上下文缓存」
+仍在进程内，且默认数据卷是 `ReadWriteOnce`。要横向扩展，先满足两个前提：把
+`PLATFORM_DATABASE_URL` 换成外部数据库、并接受草稿不共享（工作台建议单副本，或给 Ingress
+加会话亲和把同一用户固定到一个副本）。
+
+### 11.4 离线（内网）部署
+
+镜像自带全部 Python 依赖与静态前端，内网无需 pip / npm / 外网。
+
+```bash
+# 有外网的机器
+docker build -t agent-platform:v1.0.0 -f deploy/Dockerfile .
+docker pull python:3.12-slim
+docker save agent-platform:v1.0.0 python:3.12-slim | gzip > agent-platform-v1.0.0.tar.gz
+
+# 内网机器：导入后推到内网仓库
+gunzip -c agent-platform-v1.0.0.tar.gz | docker load
+docker tag agent-platform:v1.0.0 harbor.internal/library/agent-platform:v1.0.0
+docker push harbor.internal/library/agent-platform:v1.0.0
+```
+
+K8s 侧把 `Deployment` 的 `image` 换成内网仓库地址即可（`imagePullPolicy: IfNotPresent` 便于配合节点预导入）；
+`etcd` / `minio` / `milvusdb/milvus` 三个镜像同理离线导入。新增外部插件若依赖第三方包，
+需自建镜像或内网 PyPI。
+
+### 11.5 配置项与密钥
+
+| 变量 | 作用 | 默认 | 容器 / 集群里怎么给 |
+|---|---|---|---|
+| `PLATFORM_DATABASE_URL` | 平台库（设置 / 账号 / 会话 / 运行记录 / 知识库索引 / 编排方案 / 审计） | 空 = `data/platform.db`（SQLite） | Secret；生产建议 `mysql://…` / `postgresql://…` |
+| `MILVUS_URI` | 向量库地址 | `http://localhost:19530` | ConfigMap（**注意视角**：容器里写容器名 / 宿主域名） |
+| `MILVUS_COLLECTION` | 集合名（一个集合靠 `run_id` 隔离所有上传） | `default` | ConfigMap |
+| `MILVUS_METRIC_TYPE` | `COSINE` / `IP`，首次建集合即固定 | `COSINE` | ConfigMap |
+| `MILVUS_TOKEN` | 鉴权 `user:password` | 空 | Secret |
+| `TZ` / `PYTHONUNBUFFERED` / `PYTHONDONTWRITEBYTECODE` | 时区与 Python 运行行为 | `Asia/Shanghai` / `1` / `1` | ConfigMap |
+
+真实地址与口令只应出现在 Secret 或 `.env` 里：方案文件与接口里始终是 `${MILVUS_*}` 占位符原文。
+
+### 11.6 备份、升级与数据库迁移
+
+**备份三样**：平台库、`data/uploads/`（原始文件，支撑重放）、向量库（Milvus 集合或其数据卷）。
+
+```bash
+# 平台库 + 上传原件（Linux / macOS；PowerShell 用 ${PWD} 代替 "$PWD"）
+docker run --rm -v agent-platform-data:/data -v "$PWD:/backup" alpine \
+    tar czf /backup/agent-platform-data.tar.gz -C /data .
+```
+
+**升级 / 回滚**：启动时会自动建表并升级 Schema（`app/core/db.py` 的 `SCHEMA_VERSION`）。
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d --build        # 单机
+kubectl -n agent-platform set image deploy/agent-platform app=harbor.internal/library/agent-platform:v1.1.0
+kubectl -n agent-platform rollout status deploy/agent-platform
+kubectl -n agent-platform rollout undo deploy/agent-platform      # 回滚
+```
+
+**换库迁移**（SQLite → MySQL / PostgreSQL）：只改 `PLATFORM_DATABASE_URL` 不会搬数据，
+用仓库自带的一次性脚本按表搬运（先停应用，避免两边同时写入）：
+
+```bash
+docker compose -f deploy/docker-compose.yml stop app
+docker compose -f deploy/docker-compose.yml run --rm app \
+    python scripts/migrate_platform_db.py \
+    --target "mysql://app:app123456@mysql:3306/agent_platform?charset=utf8mb4" --yes
+```
+
+脚本会输出每张表的行数对比，并专门核对 `kv.security.key` —— 模型供应商 API Key 的加密密钥，
+漏搬会导致旧库里的密钥在新库里解不开。
+
+### 11.7 上线检查清单
+
+| 项 | 建议 |
+|---|---|
+| 管理员口令 | 首登改密（`admin` / `admin123` 带 `must_change_password` 标记） |
+| 自助注册 | 系统设置 → 登录与安全：`auth.allow_registration=false` |
+| 接口文档 | `auth.docs_access=admin`（默认所有登录用户可见） |
+| 脚本验证 | 容器里同样能跑 Python / Shell，等同于给使用者一个终端：对外部署建议 `script.admin_only=true` 或 `script.enabled=false`；容器内没有 `pwsh`，PowerShell 会显示为不可用 |
+| 上传上限 | `upload.max_mb`（默认 20）与 Ingress `proxy-body-size` 对齐，否则大文件被网关先挡回 413 |
+| 数据持久化 | `/app/data` 必须挂持久卷；容器重建、滚动升级都不该丢数据 |
+| 副本数 | 默认单副本 `Recreate`；扩副本前先换外部数据库并解决草稿共享（见 11.3） |
+| 备份 | 平台库 + uploads + Milvus 三样定期备份，并**做过恢复演练** |
+| 日志与审计 | `docker compose logs -f app` / `kubectl -n agent-platform logs -f deploy/agent-platform`；操作留痕查 `audit_log` 表 |
+
+---
+
+## 12. Agent示例界面
 ### 概览
-![alt text]({482B74AB-F447-456C-971F-8759A9073D41}.png)
+![alt text](docs/images/agent-overview.png)
 ### 编排工作台
-![alt text]({57D6C71E-38C9-4902-AAFC-3AD80A9583F0}.png)
+![alt text](docs/images/orchestration-workbench.png)
 ### 技能库
-![alt text]({7030C020-F1DF-49A0-B1CC-38483F44BDD7}.png)
+![alt text](docs/images/skills-library.png)
 ### 运行记录
-![alt text]({6BC9C5A0-8C91-499B-B64A-983570C8353C}.png)
+![alt text](docs/images/run-records.png)
 ### 知识库 
-![alt text]({16B0D6B6-AE3B-469F-B6E5-EBF306329D01}.png)
+![alt text](docs/images/knowledge-base.png)
 ### 个人中心
-![alt text]({7D5F4C97-5329-4CF9-9DD7-27A4340A9831}.png)
+![alt text](docs/images/profile.png)
 ### 主题外观
-![alt text]({F296205B-2FDC-409B-A37F-0D34EAE19848}.png)
+![alt text](docs/images/theme.png)
 ### 用户管理
-![alt text]({3A0EE7B2-05F5-4E9A-8346-4617E9316962}.png)
+![alt text](docs/images/user-management.png)
 ### 系统设置
-![alt text]({0940EAA4-42FB-4B3E-B681-91D10616BA96}.png)
+![alt text](docs/images/system-settings.png)
 ### API管理
-![alt text]({8E68728F-C9C4-482E-832F-4147F134D735}.png)
+![alt text](docs/images/api-management.png)

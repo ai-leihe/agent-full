@@ -1,0 +1,37 @@
+# 构建上下文排除清单（配合 deploy/Dockerfile 使用，文件放在项目根）
+#
+# 目标：镜像里只留「代码 + 静态前端 + 示例配置」，
+#       运行时状态与本地密钥一律不进镜像（容器里用环境变量 / 数据卷注入）。
+
+# ---- 运行时状态：本机的数据库、上传原件、脚本工作区都不带走 ----
+data/
+
+# ---- 本地环境变量（含口令 / 密钥）。容器里请用 environment / Secret 注入 ----
+.env
+.env.local
+
+# ---- 旧版本的文件落盘产物（首次启动的迁移来源，镜像是全新部署）----
+config/settings.json
+config/users.json
+config/.auth_secret
+
+# ---- Milvus 本地部署的数据卷 ----
+deploy/milvus/volumes/
+
+# ---- Python 开发产物 ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# ---- 与运行无关的仓库内容 ----
+docs/
+.git/
+.gitignore
+.idea/
+.vscode/
+*.png
+README.md
