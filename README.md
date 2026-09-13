@@ -993,10 +993,16 @@ docker compose -f deploy/docker-compose.yml run --rm app \
 ![alt text](docs/images/agent-overview.png)
 ### 编排工作台
 ![alt text](docs/images/orchestration-workbench.png)
+### 编排流水线执行
+![alt text](docs/images/orchestration-pipeline.png)
 ### 技能库
 ![alt text](docs/images/skills-library.png)
+### 技能插件（loader 槽位）
+![alt text](docs/images/skills-plugins.png)
 ### 运行记录
 ![alt text](docs/images/run-records.png)
+### 运行统计
+![alt text](docs/images/run-stats.png)
 ### 知识库 
 ![alt text](docs/images/knowledge-base.png)
 ### 个人中心
