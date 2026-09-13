@@ -230,11 +230,12 @@ pip install -r requirements.txt
 copy .env.example .env                     # Linux/macOS：cp .env.example .env（填 Milvus 地址等）
 cd deploy/milvus && docker compose up -d   # 启动 Milvus（默认入库后端，首次会拉镜像）
 cd ../.. && python run.py                  # 打开 http://127.0.0.1:8000
-python -m unittest discover -s tests -v    # 运行测试（Milvus 未启动时相关用例自动跳过）
+python -m unittest discover -s tests -v    # 运行测试（先启动 Milvus；不可达时依赖入库的用例会失败）
 ```
 
 - 前端工作台：<http://127.0.0.1:8000>
 - OpenAPI 文档：<http://127.0.0.1:8000/docs>（**需登录**；未登录会被带回登录门，登录后页面绑定当前账号）
+- 生产环境交付（镜像构建 / Compose 单机 / Kubernetes / 离线部署 / 备份迁移）见 **第 11 节 部署方案**
 
 **首次运行**会自动播种一个管理员账号（数据库里还没有任何账号时）：
 
@@ -696,6 +697,10 @@ agent-full/
 
 共 **212 个用例**（`python -m unittest discover -s tests -v`）。2026-09-11 实测：**210 通过 / 2 跳过**
 （跳过的是依赖本机 `sh` / `bash` 的脚本用例，Windows 上未安装这两个 shell）。
+
+> ⚠️ **跑全套前先启动 Milvus**：默认流水线的入库环节就是 `milvus_store`，向量库不可达时
+> 只有「Milvus 落库」这一组会整组跳过，其余依赖入库的用例（端到端 / 检索 / 上传类接口）
+> 会直接失败 —— 这不是代码问题，先把 `deploy/milvus` 起起来即可。
 
 `tests/test_pipeline.py`（33 个）—— 流水线本身：
 
