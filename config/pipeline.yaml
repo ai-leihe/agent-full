@@ -1,0 +1,60 @@
+# =============================================================
+# Agent 流水线编排配置
+# -------------------------------------------------------------
+# 一条流水线 = 多个 Agent 串联；每个 Agent 持有若干 Skill。
+# 替换插件只需修改下面的 `use` 字段，无需改动任何平台代码。
+#
+# 可用插件见 GET /api/skills，或参考 app/plugins/ 与 ext_plugins/。
+# =============================================================
+
+pipeline:
+  name: doc-ingestion
+  description: 文件上传 → 清洗 → 切片 → 向量化 → 入库，全链路插拔式插件编排
+
+  agents:
+    # ---------- Agent 1：文件解析与清洗 ----------
+    - name: ingestion_agent
+      role: 负责把上传文件解析为纯文本并完成清洗
+      skills:
+        - use: text_loader
+          with:
+            # 留空则自动探测编码（utf-8 / gb18030 / big5 ...）
+          # PDF / Word 会按文件签名自动识别并抽取（PDF 需 pypdf，Word 需 python-docx）
+          # 也可以显式换成 pdf_loader / docx_loader
+        - use: basic_cleaner
+          with:
+            lowercase: false
+            strip_urls: false
+            mask_email: true
+            dedupe_lines: true
+            header_footer_lines: 0
+          # 换成 markdown_normalizer 即可启用 Markdown 专用清洗
+
+    # ---------- Agent 2：文本切片 ----------
+    - name: chunking_agent
+      role: 负责把干净文本切成适合检索的片段
+      skills:
+        - use: recursive_splitter
+          with:
+            chunk_size: 500
+            chunk_overlap: 80
+          # 可换：fixed_splitter（更快）/ markdown_splitter（按标题）
+
+    # ---------- Agent 3：向量化与入库 ----------
+    - name: indexing_agent
+      role: 负责向量化并把切片写入向量库
+      skills:
+        - use: hash_embedder
+          with:
+            dim: 256
+          # 可换：openai_embedder（需 OPENAI_API_KEY）
+        # 入库到 Milvus：先启动向量库（cd deploy/milvus && docker compose up -d），
+        # 连接信息全部来自 .env 的 ${MILVUS_*}，这里只写占位符；
+        # 占位符在「实例化插件」时才展开，因此方案文件与接口都不会泄露真实地址 / 口令。
+        - use: milvus_store
+          with:
+            uri: ${MILVUS_URI}
+            collection: ${MILVUS_COLLECTION}
+            metric_type: ${MILVUS_METRIC_TYPE}
+            token: ${MILVUS_TOKEN}
+          # 可换：memory_store（零依赖进程内索引，适合离线演示 / 无 Milvus 的环境）

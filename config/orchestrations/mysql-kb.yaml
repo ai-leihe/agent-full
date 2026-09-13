@@ -1,0 +1,72 @@
+# 编排方案：MySQL 知识库入库链路
+#
+# 用法：编排工作台 → 方案列表里点「加载」→ 再点「应用生效」。
+# 生效后从上传页触发即可（sql_loader 不读上传文件，文件只是触发入口）。
+#
+# 与默认方案（config/pipeline.yaml）的唯一区别：
+#   数据源从「上传文件」换成「MySQL 表」，其余清洗/切片/向量化/入库环节完全一致。
+#
+# 说明：
+#   1. sql_loader 的 consumes 为空，可作为整条链的起点，因此 text_loader 被整体替换掉；
+#   2. 查询用 CONCAT 把 title / body 拼成一行一条记录，并关掉表头，
+#      避免渲染出 "id | title | body" 这类无检索价值的噪声行；
+#   3. 连接串不写死在这里：dsn 引用 ${MYSQL_DSN}，真实值统一在项目根目录的
+#      .env 中维护（模板见 .env.example）。展开发生在插件实例化时，且只作用于
+#      副本，所以本文件与「保存方案」都不会落盘任何口令；
+#   4. 依赖 pymysql（已安装）。
+
+orchestration:
+  name: mysql-kb
+  description: 从 MySQL 知识库表拉取文档，清洗 → 切片 → 向量化 → 入库，可直接检索
+
+  agents:
+    - id: agent_sql_ingest
+      name: ingestion_agent
+      role: 从 MySQL 知识库表拉取文档并清洗
+      steps:
+        - id: step_sql_load
+          skill: sql_loader
+          options:
+            dialect: mysql
+            # ${MYSQL_DSN} 来自 .env，例如：
+            #   mysql://app:app123456@127.0.0.1:3306/demo?charset=utf8mb4
+            dsn: "${MYSQL_DSN}"
+            query: "SELECT CONCAT(title, '：', body) AS content FROM kb_docs"
+            include_header: false
+            max_rows: 200
+          enabled: true
+        - id: step_clean
+          skill: basic_cleaner
+          options:
+            lowercase: false
+            strip_urls: false
+            mask_email: true
+            dedupe_lines: true
+            header_footer_lines: 0
+          enabled: true
+
+    - id: agent_chunk
+      name: chunking_agent
+      role: 把文档切成适合检索的片段
+      steps:
+        - id: step_split
+          skill: recursive_splitter
+          options:
+            chunk_size: 500
+            chunk_overlap: 80
+          enabled: true
+
+    - id: agent_index
+      name: indexing_agent
+      role: 向量化并建立可检索索引
+      steps:
+        - id: step_embed
+          skill: hash_embedder
+          options:
+            dim: 256
+          enabled: true
+        - id: step_store
+          skill: memory_store
+          options:
+            collection: mysql-kb
+          enabled: true

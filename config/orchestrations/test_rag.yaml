@@ -1,0 +1,48 @@
+orchestration:
+  name: doc-ingestion
+  description: 文件上传 → 清洗 → 切片 → 向量化 → 入库，全链路插拔式插件编排
+  agents:
+  - id: agent_9044c8fc
+    name: ingestion_agent
+    role: 负责把上传文件解析为纯文本并完成清洗
+    steps:
+    - id: step_a08b64bf
+      skill: text_loader
+      options: {}
+      enabled: true
+    - id: step_2392bd3c
+      skill: basic_cleaner
+      options:
+        lowercase: false
+        strip_urls: false
+        mask_email: true
+        dedupe_lines: true
+        header_footer_lines: 0
+      enabled: true
+  - id: agent_a93a79af
+    name: chunking_agent
+    role: 负责把干净文本切成适合检索的片段
+    steps:
+    - id: step_0c1a754c
+      skill: recursive_splitter
+      options:
+        chunk_size: 500
+        chunk_overlap: 80
+      enabled: true
+  - id: agent_de031b8b
+    name: indexing_agent
+    role: 负责向量化并建立可检索索引
+    steps:
+    - id: step_ae011e4a
+      skill: hash_embedder
+      options:
+        dim: 256
+      enabled: true
+    - id: step_8cd9ed2d
+      skill: milvus_store
+      options:
+        uri: ${MILVUS_URI}
+        collection: ${MILVUS_COLLECTION}
+        metric_type: ${MILVUS_METRIC_TYPE}
+        token: ${MILVUS_TOKEN}
+      enabled: true

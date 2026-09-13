@@ -1,0 +1,17 @@
+# Core runtime dependencies
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.6.0
+PyYAML>=6.0.1
+python-multipart>=0.0.9
+
+# ---- Optional: install only when the matching plugin is enabled ----
+# pypdf>=4.0.0                    # PDF 解析：text_loader 自动委派 + pdf_loader 插件
+# python-docx>=1.1.0              # Word 解析：text_loader 自动委派 + docx_loader 插件
+# openai>=1.30.0                  # enables the openai_embedder plugin
+# pymilvus>=3.0.0                 # 启用 milvus_store 插件，配合 deploy/milvus 部署
+# psycopg2-binary>=2.9.9          # enables the sql_loader plugin (PostgreSQL)
+#                                 # sql_loader 的 SQLite 分支使用标准库 sqlite3，无需额外依赖
+
+# ---- Required by config/orchestrations/mysql-kb.yaml ----
+pymysql>=1.1.0                    # enables the sql_loader plugin (MySQL)

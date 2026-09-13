@@ -1,0 +1,27 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ---- 运行时产物（首次启动自动生成，不应入库）----
+config/settings.json
+config/users.json
+config/.auth_secret
+data/
+
+# ---- 本地环境变量（含口令 / 密钥，只提交 .env.example）----
+.env
+.env.local
+
+# ---- Milvus 部署运行时数据卷 ----
+deploy/milvus/volumes/
+
+# ---- 编辑器 / 系统 ----
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+.workbuddy/

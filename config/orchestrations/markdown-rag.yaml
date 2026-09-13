@@ -1,0 +1,54 @@
+# 编排方案示例：Markdown 文档专用链路
+#
+# 在编排工作台里点「加载」即可套用；也可以直接用它替换 config/pipeline.yaml。
+# 与默认方案的区别：
+#   1. 清洗换成 markdown_normalizer（剥离 front-matter / 代码块标记）
+#   2. 切片换成 markdown_splitter（按标题层级切，标题路径写入 chunk.meta）
+#   3. 向量维度降到 128，减少存储开销
+
+orchestration:
+  name: markdown-rag
+  description: 面向 Markdown 知识库的检索链路，按标题切片并保留章节路径
+
+  agents:
+    - id: agent_ingest
+      name: ingestion_agent
+      role: 解析 Markdown 并规范化
+      steps:
+        - id: step_loader
+          skill: text_loader
+          options: {}
+          enabled: true
+        - id: step_clean
+          skill: markdown_normalizer
+          options:
+            keep_headings: true
+            keep_bullets: true
+            drop_images: true
+          enabled: true
+
+    - id: agent_chunk
+      name: chunking_agent
+      role: 按标题层级切片
+      steps:
+        - id: step_split
+          skill: markdown_splitter
+          options:
+            max_level: 3
+          enabled: true
+
+    - id: agent_index
+      name: indexing_agent
+      role: 向量化并入库
+      steps:
+        - id: step_embed
+          skill: hash_embedder
+          options:
+            dim: 128
+            seed: 42
+          enabled: true
+        - id: step_store
+          skill: memory_store
+          options:
+            collection: markdown
+          enabled: true
