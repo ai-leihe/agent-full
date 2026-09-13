@@ -795,6 +795,9 @@ docker build -t agent-platform:v1.0.0 -f deploy/Dockerfile .
 - 可选依赖由 `--build-arg EXTRAS="..."` 控制，默认装默认入库后端与文档解析要用的
   `pymilvus` / `pypdf` / `python-docx`；要接 OpenAI 向量化或把平台库换成 PostgreSQL 时再追加
   `openai` / `psycopg2-binary`（`pymysql` 已在 `requirements.txt` 主依赖里）。
+- 用 compose 部署时直接 `docker compose -f deploy/docker-compose.yml up -d --build` 即可，
+  它会按 compose 里的 `image` 名（`agent-platform:latest`）构建；上面这条独立 `build` 更适合
+  导出离线包，tag 自己定（换 tag 时记得同步改 compose / K8s 清单里的 `image`）。
 - 以非 root（UID `10001`）运行，`/app/data` 是唯一需要持久化的目录；容器内用
   `uvicorn --host 0.0.0.0` 启动（`run.py` 里的 `127.0.0.1` 只适合本机直跑）。
 - 自带 `HEALTHCHECK`，打的是免登录的 `GET /api/health`，与 K8s 探针同一入口。
@@ -824,11 +827,14 @@ curl http://127.0.0.1:8000/api/health
   `http://host.docker.internal:19530`（Linux 通过 `extra_hosts: host-gateway` 补出该域名）。
   想沿用项目根 `.env`：`docker compose -f deploy/docker-compose.yml --env-file .env up -d`
   —— 根 `.env` 里 `MILVUS_URI=http://localhost:19530` 是宿主机视角，不会被注入容器。
+- **换宿主端口**：8000 被占用时用 `APP_PORT=18000 docker compose -f deploy/docker-compose.yml up -d`
+  （容器内始终监听 8000，只有宿主机映射变）。
 - **持久化**：平台状态全在具名卷 `agent-platform-data`（容器内 `/app/data`：`platform.db` +
   `uploads/` + `script_workspace/`）。`docker compose down` 不删卷，`down -v` 才删。
 - **外部插件**：宿主机 `ext_plugins/` 以只读方式挂进容器，丢 `.py` 进去后在「技能库」点
   「重新扫描插件目录」即生效，无需重建镜像。
-- **容器内自检**（与 CI 同一套用例，Milvus 不通时相关用例自动跳过）：
+- **容器内自检**（与 CI 同一套用例；镜像自带 `requirements-dev.txt`，实测
+  `Ran 212 tests → OK (skipped=3)`）：
   ```bash
   docker compose -f deploy/docker-compose.yml run --rm app python -m unittest discover -s tests
   ```
