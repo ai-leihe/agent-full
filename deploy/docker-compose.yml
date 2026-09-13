@@ -30,7 +30,8 @@ services:
     container_name: agent-platform-app
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      # 宿主机端口可用 APP_PORT 覆盖（默认 8000）
+      - "${APP_PORT:-8000}:8000"
     extra_hosts:
       # Linux 上补出 host.docker.internal（Windows / macOS 原生自带）
       - "host.docker.internal:host-gateway"
