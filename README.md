@@ -762,3 +762,26 @@ agent-full/
 | 分布式 | 把 `Skill.run` 换成 RPC 调用，Agent 即可跨进程编排 |
 | 多租户 | 在 `User` 上扩展 `tenant` 字段，`Warehouse` / `RunRegistry` 按租户分片 |
 | 审计日志 | ✅ 已有 `audit_log` 表与 `audit / list_audit / audit_stats`；可继续扩展为更细粒度的操作审计 |
+
+
+## 11. Agent示例界面
+### 概览
+![alt text]({482B74AB-F447-456C-971F-8759A9073D41}.png)
+### 编排工作台
+![alt text]({57D6C71E-38C9-4902-AAFC-3AD80A9583F0}.png)
+### 技能库
+![alt text]({7030C020-F1DF-49A0-B1CC-38483F44BDD7}.png)
+### 运行记录
+![alt text]({6BC9C5A0-8C91-499B-B64A-983570C8353C}.png)
+### 知识库 
+![alt text]({16B0D6B6-AE3B-469F-B6E5-EBF306329D01}.png)
+### 个人中心
+![alt text]({7D5F4C97-5329-4CF9-9DD7-27A4340A9831}.png)
+### 主题外观
+![alt text]({F296205B-2FDC-409B-A37F-0D34EAE19848}.png)
+### 用户管理
+![alt text]({3A0EE7B2-05F5-4E9A-8346-4617E9316962}.png)
+### 系统设置
+![alt text]({0940EAA4-42FB-4B3E-B681-91D10616BA96}.png)
+### API管理
+![alt text]({8E68728F-C9C4-482E-832F-4147F134D735}.png)
